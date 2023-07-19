@@ -30,6 +30,7 @@ class LoggerFactory:
         learner_time_delta: Optional[float] = None,
         evaluator_time_delta: Optional[float] = None,
         async_learner_logger: bool = False,
+        add_uid: bool = True,
     ):
         """Create a logger factory."""
 
@@ -52,6 +53,7 @@ class LoggerFactory:
         self._learner_time_delta = learner_time_delta
         self._evaluator_time_delta = evaluator_time_delta
         self._async_learner_logger = async_learner_logger
+        self._add_uid = add_uid
 
     @property
     def run(self):
@@ -77,6 +79,7 @@ class LoggerFactory:
                 log_to_wandb=self._log_to_wandb,
                 steps_key=steps_key,
                 wandb_run=self._run,
+                add_uid=self._add_uid,
             )
         elif label in ("evaluator", "eval_loop", "evaluation", "eval"):
             return self.make_default_logger(
@@ -88,6 +91,7 @@ class LoggerFactory:
                 workdir=self._workdir,
                 log_to_wandb=self._log_to_wandb,
                 wandb_run=self._run,
+                add_uid=self._add_uid,
             )
         elif label in ("actor", "train_loop", "train"):
             return self.make_default_logger(
@@ -98,6 +102,7 @@ class LoggerFactory:
                 workdir=self._workdir,
                 log_to_wandb=self._log_to_wandb,
                 wandb_run=self._run,
+                add_uid=self._add_uid,
             )
         else:
             logging.warning("Unknown label %s. Fallback to default.", label)
@@ -108,6 +113,7 @@ class LoggerFactory:
                 workdir=self._workdir,
                 log_to_wandb=self._log_to_wandb,
                 wandb_run=self._run,
+                add_uid=self._add_uid,
             )
 
     @staticmethod

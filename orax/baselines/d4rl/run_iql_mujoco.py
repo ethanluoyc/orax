@@ -8,22 +8,16 @@ from absl import flags
 from acme import types
 from acme import wrappers
 from acme.jax import experiments
+from ml_collections import config_flags
 
 from orax.agents import iql
 from orax.baselines import experiment_utils
 from orax.baselines.d4rl import d4rl_evaluation
+from orax.baselines.d4rl import d4rl_utils
 from orax.datasets import tfds
 
-FLAGS = flags.FLAGS
-flags.DEFINE_string("workdir", "/tmp/orax", "")
-# flags.DEFINE_string("env", "hopper-medium-v2", "OpenAI gym environment name")
-flags.DEFINE_integer("seed", 0, "seed")
-flags.DEFINE_integer("eval_freq", int(5e4), "evaluation frequency")
-flags.DEFINE_integer("batch_size", int(256), "evaluation frequency")
-flags.DEFINE_integer("eval_episodes", int(10), "number of evaluation episodes")
-flags.DEFINE_integer("max_timesteps", int(1e6), "maximum number of steps")
-flags.DEFINE_integer("num_sgd_steps_per_step", 1, "maximum number of steps")
-flags.DEFINE_bool("log_to_wandb", False, "whether to use W&B")
+_WORKDIR = flags.DEFINE_string("workdir", "/tmp/orax", "")
+_CONFIG = config_flags.DEFINE_config_file("config", None)
 
 
 def make_environment(name, seed):
@@ -61,37 +55,44 @@ def _batch_steps(episode: rlds.Episode) -> tf.data.Dataset:
     )
 
 
-def transform_transitions_dataset(episode_dataset, reward_scale):
+def transform_transitions_dataset(episode_dataset, reward_scale, reward_bias):
     batched_steps = episode_dataset.flat_map(_batch_steps)
     transitions = rlds.transformations.map_steps(
         batched_steps, _batched_step_to_transition
     )
     return transitions.map(
         lambda transition: transition._replace(
-            reward=(transition.reward * reward_scale)
+            reward=(transition.reward * reward_scale + reward_bias)
         ),
         num_parallel_calls=tf.data.AUTOTUNE,
     )
 
 
-def _get_demonstration_dataset_factory(name, batch_size):
-    dataset = tfds.load_tfds_dataset(name)
-    num_episodes = dataset.cardinality()
-    dataset = dataset.map(
-        add_episode_return,
-        num_parallel_calls=tf.data.AUTOTUNE,
-    ).cache()
-    episode_returns = dataset.map(
-        lambda episode: episode["episode_return"],
-        num_parallel_calls=tf.data.AUTOTUNE,
-    )
-    episode_returns = episode_returns.batch(num_episodes).get_single_element().numpy()
-    max_episode_return = np.max(episode_returns)
-    min_episode_return = np.min(episode_returns)
-    reward_scale = 1000.0 / (max_episode_return - min_episode_return)
+def _get_demonstration_dataset_factory(d4rl_name, batch_size):
+    tfds_name = d4rl_utils.get_tfds_name(d4rl_name)
+    dataset = tfds.load_tfds_dataset(tfds_name)
+    if "antmaze" in d4rl_name:
+        reward_scale = 1.0
+        reward_bias = -1.0
+    else:
+        num_episodes = dataset.cardinality()
+        dataset = dataset.map(
+            add_episode_return, num_parallel_calls=tf.data.AUTOTUNE
+        ).cache()
+        episode_returns = dataset.map(
+            lambda episode: episode["episode_return"],
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        episode_returns = (
+            episode_returns.batch(num_episodes).get_single_element().numpy()
+        )
+        max_episode_return = np.max(episode_returns)
+        min_episode_return = np.min(episode_returns)
+        reward_scale = 1000.0 / (max_episode_return - min_episode_return)
+        reward_bias = 0.0
 
     def make_demonstrations(key):
-        transitions = transform_transitions_dataset(dataset, reward_scale)
+        transitions = transform_transitions_dataset(dataset, reward_scale, reward_bias)
         iterator = tfds.JaxInMemoryRandomSampleIterator(transitions, key, batch_size)
         yield from iterator
 
@@ -100,49 +101,60 @@ def _get_demonstration_dataset_factory(name, batch_size):
 
 def main(_):
     # Disable TF GPU
-    dataset_name = "d4rl_mujoco_halfcheetah/v2-expert"
-    env_name = "halfcheetah-expert-v2"
     tf.config.set_visible_devices([], "GPU")
 
-    builder = iql.IQLBuilder(
-        config=iql.IQLConfig(
-            learning_rate=3e-4,
-            discount=0.99,
-            expectile=0.7,  # The actual tau for expectiles.
-            temperature=3.0,
-        )
-    )
+    workdir = _WORKDIR.value
+    config = _CONFIG.value
+    dataset_name = config.dataset_name
+    max_num_learner_steps = config.max_num_learner_steps
+    batch_size = config.batch_size
+    seed = config.seed
+    log_to_wandb = config.log_to_wandb
+    eval_every = config.eval_every
+    add_uid = True
 
-    assert FLAGS.max_timesteps % FLAGS.num_sgd_steps_per_step == 0
-    assert FLAGS.eval_freq % FLAGS.num_sgd_steps_per_step == 0
+    builder = iql.IQLBuilder(config=iql.IQLConfig(**config.iql_config))
+
     demonstration_dataset_factory = _get_demonstration_dataset_factory(
-        dataset_name,
-        FLAGS.batch_size * FLAGS.num_sgd_steps_per_step,
+        dataset_name, batch_size
     )
 
-    environment_factory = lambda seed: make_environment(env_name, seed)
+    environment_factory = lambda seed: make_environment(dataset_name, seed)
     network_factory = iql.make_networks
+    logger_factory = experiment_utils.LoggerFactory(
+        workdir=workdir,
+        log_to_wandb=log_to_wandb,
+        evaluator_time_delta=0.0,
+        async_learner_logger=True,
+        add_uid=add_uid,
+        wandb_kwargs={"config": config.to_dict()},
+    )
 
-    config = experiments.OfflineExperimentConfig(
+    checkpoint_config = None
+    if config.checkpoint:
+        checkpoint_config = experiments.CheckpointingConfig(
+            directory=workdir, add_uid=add_uid, **config.checkpoint_kwargs
+        )
+
+    experiment_config = experiments.OfflineExperimentConfig(
         builder,
         network_factory=network_factory,
         demonstration_dataset_factory=demonstration_dataset_factory,
         environment_factory=environment_factory,
-        max_num_learner_steps=FLAGS.max_timesteps // FLAGS.num_sgd_steps_per_step,
-        seed=FLAGS.seed,
-        checkpointing=None,
-        logger_factory=experiment_utils.LoggerFactory(
-            log_to_wandb=FLAGS.log_to_wandb,
-            evaluator_time_delta=0.0,
-        ),
-        observers=[d4rl_evaluation.D4RLScoreObserver(env_name)],
+        max_num_learner_steps=max_num_learner_steps,
+        seed=seed,
+        checkpointing=checkpoint_config,
+        logger_factory=logger_factory,
+        observers=[d4rl_evaluation.D4RLScoreObserver(dataset_name)],
     )
+
     experiments.run_offline_experiment(
-        config,
-        eval_every=FLAGS.eval_freq // FLAGS.num_sgd_steps_per_step,
-        num_eval_episodes=10,
+        experiment_config,
+        eval_every=eval_every,
+        num_eval_episodes=config.num_eval_episodes,
     )
 
 
 if __name__ == "__main__":
+    flags.mark_flag_as_required("config")
     app.run(main)

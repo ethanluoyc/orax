@@ -1,0 +1,9 @@
+-c requirements.txt
+pytest
+pytest-xdist
+black
+pip-tools
+pylint
+ruff
+ipykernel
+dill

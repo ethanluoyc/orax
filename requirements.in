@@ -1,0 +1,30 @@
+-f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+jax[cuda]
+dm-haiku
+dm-sonnet
+flax
+chex
+# tensorflow, reverb and launchpad must be pinned to consistent versions
+tensorflow-cpu==2.12.0
+dm-acme @ git+https://github.com/deepmind/acme.git@546a47a0154b50145dd9ac3fb3ca57c62e69805f#egg=dm-acme
+dm-reverb==0.11.0
+https://github.com/ethanluoyc/launchpad/releases/download/v0.5.2rc0%2B1/dm_launchpad-0.5.2rc0+1-cp39-cp39-manylinux2014_x86_64.whl
+tensorflow-probability>=0.17.0
+tfds-nightly
+optax
+rlax
+envlogger
+wandb
+ml-collections
+rlds
+absl-py>=0.12.0
+numpy>=1.20.2,<1.25.0
+scipy>=1.6.0
+matplotlib
+pandas
+ott-jax
+
+gym>=0.21.0,<0.24.0
+d4rl @ git+https://github.com/Farama-Foundation/d4rl@71a9549#egg=d4rl
+dm-control
+mujoco-py<2.2,>=2.1

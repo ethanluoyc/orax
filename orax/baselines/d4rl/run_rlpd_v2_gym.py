@@ -1,62 +1,18 @@
-import gym
 import jax
 from absl import app
 from absl import flags
-from acme import wrappers
 from acme.jax import experiments
 from ml_collections import config_flags
 
 from orax.agents import redq
 from orax.baselines import experiment_utils
+from orax.baselines.d4rl import d4rl_utils
 from orax.datasets import tfds
-
-# Somehow importing d4rl earlier causes segfault in singularity
-import d4rl  # noqa: F401 isort:skip
 
 _WORKDIR = flags.DEFINE_string("workdir", "/tmp/rlpd", "")
 _CONFIG = config_flags.DEFINE_config_file(
     "config", None, "File path to the training configuration."
 )
-
-
-def make_environment(name, rescale_actions=True):
-    env = gym.make(name)
-    env = wrappers.GymWrapper(env)
-
-    if rescale_actions:
-        env = wrappers.CanonicalSpecWrapper(env, clip=True)
-
-    env = wrappers.SinglePrecisionWrapper(env)
-
-    return env
-
-
-qualities = ["medium", "random", "expert", "medium-replay", "random", "medium-expert"]
-tasks = ["halfcheetah", "hopper", "walker2d", "ant"]
-
-# Mujoco
-DATASET_NAME_TO_TFDS_MAP = {}
-for quality in qualities:
-    for task in tasks:
-        d4rl_name = f"{task}-{quality}-v2"
-        tfds_name = f"d4rl_mujoco_{task}/v2-{quality}"
-        DATASET_NAME_TO_TFDS_MAP[d4rl_name] = tfds_name
-
-# Antmaze
-for dset in [
-    "large-diverse",
-    "large-play",
-    "medium-play",
-    "medium-diverse",
-    "umaze",
-    "umaze-diverse",
-]:
-    for version in ["v0", "v2"]:
-        # V2 added recently in nightly only
-        # https://github.com/tensorflow/datasets/pull/5008
-        d4rl_name = f"antmaze-{dset}-{version}"
-        tfds_name = f"d4rl_antmaze/{dset}-{version}"
-        DATASET_NAME_TO_TFDS_MAP[d4rl_name] = tfds_name
 
 
 def _get_demonstration_dataset_factory(name, seed):
@@ -76,7 +32,6 @@ def _get_demonstration_dataset_factory(name, seed):
 def main(_):
     config = _CONFIG.value
     env_name = config.env_name
-    dataset_name = DATASET_NAME_TO_TFDS_MAP[env_name]
 
     seed = config.seed
 
@@ -116,24 +71,28 @@ def main(_):
 
     builder = redq.REDQBuilder(
         redq_config,
-        make_demonstrations=_get_demonstration_dataset_factory(dataset_name, seed=seed),
+        make_demonstrations=_get_demonstration_dataset_factory(env_name, seed=seed),
+    )
+    environment_factory = lambda seed: d4rl_utils.make_environment(env_name, seed)
+
+    logger_factory = experiment_utils.LoggerFactory(
+        workdir=_WORKDIR.value,
+        log_to_wandb=config.log_to_wandb,
+        wandb_kwargs={
+            "project": "rlpd",
+            "config": config,
+        },
+        evaluator_time_delta=0.01,
+        add_uid=True,
     )
 
     experiment = experiments.ExperimentConfig(
         builder=builder,
-        environment_factory=lambda _: make_environment(env_name),
+        environment_factory=environment_factory,
         network_factory=network_factory,
         seed=seed,
         max_num_actor_steps=config.max_steps,
-        logger_factory=experiment_utils.LoggerFactory(
-            workdir=_WORKDIR.value,
-            log_to_wandb=config.log_to_wandb,
-            wandb_kwargs={
-                "project": "rlpd",
-                "config": config,
-            },
-            evaluator_time_delta=0.01,
-        ),
+        logger_factory=logger_factory,
         checkpointing=None,
     )
     experiments.run_experiment(

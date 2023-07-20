@@ -1,20 +1,18 @@
+from typing import Iterator
+
 import absl.app
 import absl.flags
 import acme
-import d4rl  # noqa: F401
-import gym
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import reverb
 import tensorflow as tf
-import tensorflow_datasets as tfds
 import tree
-from absl import flags
 from acme import datasets as acme_datasets
+from acme import specs
 from acme import types
-from acme import wrappers
 from acme.adders import reverb as adders_reverb
 from acme.agents.jax import actor_core
 from acme.agents.jax import actors
@@ -22,17 +20,19 @@ from acme.agents.jax import sac
 from acme.jax import utils as jax_utils
 from acme.jax import variable_utils
 from acme.utils import counting
+from acme.utils import loggers
 from ml_collections import config_flags
 
 from orax.agents import calql
 from orax.agents.calql.adder import SparseReward
 from orax.baselines import experiment_utils
 from orax.baselines.d4rl import d4rl_evaluation
+from orax.baselines.d4rl import d4rl_utils
+from orax.datasets import tfds
 
 _CONFIG = config_flags.DEFINE_config_file(
     "config", "configs/calql_antmaze.py", lock_config=False
 )
-_LOG_TO_WANDB = flags.DEFINE_bool("log_to_wandb", False, "Log to wandb")
 
 
 @tf.function
@@ -53,7 +53,7 @@ def compute_return_to_go(rewards, discounts, gamma):
 
 
 @tf.function
-def preprocess_episode(episode, reward_scale, reward_bias, gamma):
+def preprocess_episode(episode, negative_reward, reward_scale, reward_bias, gamma):
     steps = episode["steps"].batch(episode["steps"].cardinality()).get_single_element()
 
     observations = steps["observation"][:-1]
@@ -63,7 +63,7 @@ def preprocess_episode(episode, reward_scale, reward_bias, gamma):
     discounts = tf.cast(steps["discount"][:-1], tf.float64)
 
     rewards = rewards * reward_scale + reward_bias
-    reward_negative = 0.0 * reward_scale + reward_bias
+    reward_negative = negative_reward * reward_scale + reward_bias
     gamma = tf.convert_to_tensor(gamma, dtype=rewards.dtype)
 
     if tf.reduce_all(rewards == reward_negative):
@@ -81,12 +81,15 @@ def preprocess_episode(episode, reward_scale, reward_bias, gamma):
     )
 
 
-def get_transitions_dataset(reward_scale, reward_bias, gamma):
-    dataset = tfds.load("d4rl_antmaze/medium-diverse-v2", split="train")
+def get_transitions_dataset(
+    d4rl_name, negative_reward, reward_scale, reward_bias, gamma
+):
+    tfds_name = d4rl_utils.get_tfds_name(d4rl_name)
+    dataset = tfds.load_tfds_dataset(tfds_name)
     tf_transitions = []
     for episode in dataset:
         converted_transitions = preprocess_episode(
-            episode, reward_scale, reward_bias, gamma
+            episode, negative_reward, reward_scale, reward_bias, gamma
         )
         tf_transitions.append(converted_transitions)
 
@@ -99,141 +102,96 @@ def get_transitions_dataset(reward_scale, reward_bias, gamma):
 def main(argv):
     del argv
     config = _CONFIG.value
-    transitions = get_transitions_dataset(
-        config.reward_scale, config.reward_bias, config.cql.discount
+
+    logger_factory = experiment_utils.LoggerFactory(
+        workdir=None, log_to_wandb=config.log_to_wandb, evaluator_time_delta=0.0
     )
 
-    def make_offline_iterator(batch_size):
-        from orax.datasets.tfds import JaxInMemoryRandomSampleIterator
+    reward_config = SparseReward(
+        reward_scale=config.reward_scale,
+        reward_bias=config.reward_bias,
+        positive_reward=1,
+        negative_reward=0,
+    )
 
-        return JaxInMemoryRandomSampleIterator(
-            transitions, jax.random.PRNGKey(0), batch_size
-        )
+    transitions = get_transitions_dataset(
+        config.dataset_name,
+        reward_config.negative_reward,
+        reward_config.reward_scale,
+        reward_config.reward_bias,
+        config.discount,
+    )
 
-    env = gym.make(config.env)
-    env = wrappers.GymWrapper(env)
-    env = wrappers.SinglePrecisionWrapper(env)
+    env = d4rl_utils.make_environment(config.dataset_name, config.seed)
     env_spec = acme.make_environment_spec(env)
 
     networks = calql.make_networks(
         env_spec,
-        policy_hidden_sizes=(256, 256),
-        critic_hidden_sizes=(256, 256, 256, 256),
+        policy_hidden_sizes=config.policy_hidden_sizes,
+        critic_hidden_sizes=config.critic_hidden_sizes,
     )
 
-    # if config.cql.target_entropy >= 0.0:
-    #     config.cql.target_entropy = -np.prod(env_spec.actions.shape).item()
-    target_entropy = -np.prod(env_spec.actions.shape).item()
-
-    parent_counter = counting.Counter(time_delta=0.0)
-
-    logger_factory = experiment_utils.LoggerFactory(
-        workdir=None,
-        log_to_wandb=_LOG_TO_WANDB.value,
-        evaluator_time_delta=0.001,
+    eval_policy = actor_core.batched_feed_forward_to_actor_core(
+        sac.apply_policy_and_sample(networks, eval_mode=True)
+    )
+    train_policy = actor_core.batched_feed_forward_to_actor_core(
+        sac.apply_policy_and_sample(networks, eval_mode=False)
     )
 
-    offline_iterator = make_offline_iterator(config.batch_size)
-    offline_iterator = jax_utils.prefetch(offline_iterator)
-
-    learner_logger = logger_factory("learner", "learner_steps", 0)
-    learner_counter = counting.Counter(parent_counter, "learner", time_delta=0.0)
-
-    offline_learner = calql.CalQLLearner(
-        config.batch_size,
-        networks,
-        jax.random.PRNGKey(0),
-        offline_iterator,
-        policy_optimizer=optax.adam(config.cql.policy_lr),
-        critic_optimizer=optax.adam(config.cql.qf_lr),
-        tau=config.cql.soft_target_update_rate,
-        cql_lagrange_threshold=config.cql.cql_target_action_gap,
-        cql_num_samples=config.cql.cql_n_actions,
-        logger=learner_logger,
-        num_sgd_steps_per_step=1,
-        reward_scale=1.0,
-        discount=config.cql.discount,
-        target_entropy=target_entropy,
-        num_bc_iters=0,
-        max_target_backup=config.cql.cql_max_target_backup,
-        use_calql=config.enable_calql,
-        counter=learner_counter,
-    )
-
-    offline_eval_actor = actors.GenericActor(
-        actor_core.batched_feed_forward_to_actor_core(
-            sac.apply_policy_and_sample(networks, eval_mode=True)
-        ),
-        jax.random.PRNGKey(0),
-        variable_utils.VariableClient(
-            offline_learner, "policy", update_period=1, device="cpu"
-        ),
-        per_episode_update=True,
-    )
-
-    evaluator_counter = counting.Counter(parent_counter, "evaluator", time_delta=0.0)
-    evaluator_logger = logger_factory("evaluator", "evaluator_steps", 0)
-
-    offline_evaluator = d4rl_evaluation.D4RLEvaluator(
-        lambda: env,
-        offline_eval_actor,
-        logger=evaluator_logger,
-        counter=evaluator_counter,
-    )
-
-    num_offline_steps = config.n_train_step_per_epoch_offline * config.n_pretrain_epochs
-    for step in range(num_offline_steps):
-        offline_learner.step()
-        if (step + 1) % int(
-            config.offline_eval_every_n_epoch * config.n_train_step_per_epoch_offline
-        ) == 0:
-            offline_evaluator.run(num_episodes=20)
-
-    # mix offline and online buffer
-    assert config.mixing_ratio >= 0.0
-    batch_size_offline = int(config.mixing_ratio * config.batch_size)
-    batch_size_online = config.batch_size - batch_size_offline
-
-    reverb_tables = [
-        reverb.Table(
-            name="priority_table",
-            sampler=reverb.selectors.Uniform(),
-            remover=reverb.selectors.Fifo(),
-            max_size=int(1e6),
-            rate_limiter=reverb.rate_limiters.MinSize(1),
-            signature=adders_reverb.NStepTransitionAdder.signature(
-                env_spec,
-                extras_spec={"mc_return": tf.TensorSpec(shape=(), dtype=tf.float32)},
-            ),
+    def make_offline_iterator(batch_size):
+        return tfds.JaxInMemoryRandomSampleIterator(
+            transitions, jax.random.PRNGKey(config.seed), batch_size
         )
-    ]
 
-    replay_server = reverb.Server(reverb_tables, port=None)
-    replay_client = replay_server.localhost_client()
+    def make_offline_learner(
+        networks: calql.CQLNetworks,
+        random_key: jax.random.PRNGKeyArray,
+        dataset: Iterator[types.Transitions],
+        env_spec: specs.EnvironmentSpec,
+        logger: loggers.Logger,
+        counter: counting.Counter,
+    ):
+        target_entropy = -np.prod(env_spec.actions.shape).item()
+        return calql.CalQLLearner(
+            config.batch_size,
+            networks,
+            random_key,
+            dataset,
+            policy_optimizer=optax.adam(config.policy_lr),
+            critic_optimizer=optax.adam(config.qf_lr),
+            reward_scale=1.0,  # Reward scaled in dataset iterator
+            target_entropy=target_entropy,
+            discount=config.discount,
+            num_bc_iters=0,
+            use_calql=config.enable_calql,
+            **config.cql_config,
+            logger=logger,
+            counter=counter,
+        )
 
-    train_env = gym.make(config.env)
-    train_env = wrappers.GymWrapper(train_env)
-    train_env = wrappers.SinglePrecisionWrapper(train_env)
-    online_logger = logger_factory("actor", "actor_steps", 0)
-    online_counter = counting.Counter(parent_counter, "actor", time_delta=0.0)
+    def make_actor(policy, random_key, variable_source, adder=None):
+        return actors.GenericActor(
+            policy,
+            random_key,
+            variable_utils.VariableClient(
+                variable_source, "policy", update_period=1, device="cpu"
+            ),
+            adder=adder,
+            per_episode_update=True,
+        )
 
-    num_steps = 0
-    episode_length = 0
-    episode_return = 0
-    timestep = train_env.reset()
-    initial_num_steps = 5000
-    eval_every = config.online_eval_every_n_env_steps
-    eval_episodes = config.eval_n_trajs
+    def make_online_iterator(replay_client: reverb.Client):
+        # mix offline and online buffer
+        assert config.mixing_ratio >= 0.0
+        online_batch_size = int(config.mixing_ratio * config.batch_size)
+        offline_batch_size = config.batch_size - online_batch_size
+        offline_iterator = make_offline_iterator(offline_batch_size)
 
-    del offline_iterator
-
-    def make_online_iterator():
-        offline_iterator = make_offline_iterator(batch_size_offline)
         online_dataset = acme_datasets.make_reverb_dataset(
             table="priority_table",
             server_address=replay_client.server_address,
             num_parallel_calls=4,
-            batch_size=batch_size_online,
+            batch_size=online_batch_size,
             prefetch_size=1,
         ).as_numpy_iterator()
 
@@ -248,85 +206,128 @@ def main(argv):
                 online_transitions,
             )
 
-    adder = calql.CalQLAdder(
-        adders_reverb.NStepTransitionAdder(
-            replay_client, 1, discount=config.cql.discount
-        ),
-        config.cql.discount,
-        reward_config=SparseReward(
-            reward_scale=config.reward_scale,
-            reward_bias=config.reward_bias,
-            positive_reward=1,
-            negative_reward=0,
-        ),
+    def make_evaluator(random_key, learner):
+        return d4rl_evaluation.D4RLEvaluator(
+            lambda: env,
+            make_actor(eval_policy, random_key, learner),
+            logger=evaluator_logger,
+            counter=evaluator_counter,
+        )
+
+    def make_replay_tables(env_spec):
+        return [
+            reverb.Table(
+                name="priority_table",
+                sampler=reverb.selectors.Uniform(),
+                remover=reverb.selectors.Fifo(),
+                # Do not limit the size of the table.
+                max_size=config.online_num_steps,
+                rate_limiter=reverb.rate_limiters.MinSize(1),
+                signature=adders_reverb.NStepTransitionAdder.signature(
+                    env_spec,
+                    extras_spec={
+                        "mc_return": tf.TensorSpec(shape=(), dtype=tf.float32)
+                    },
+                ),
+            )
+        ]
+
+    key = jax.random.PRNGKey(config.seed)
+
+    parent_counter = counting.Counter(time_delta=0.0)
+    learner_counter = counting.Counter(parent_counter, "learner", time_delta=0.0)
+    learner_logger = logger_factory("learner", learner_counter.get_steps_key(), 0)
+
+    learner_key, key = jax.random.split(key)
+
+    offline_iterator = make_offline_iterator(config.batch_size)
+    offline_iterator = jax_utils.prefetch(offline_iterator)
+
+    offline_learner = make_offline_learner(
+        networks,
+        learner_key,
+        offline_iterator,
+        env_spec,
+        learner_logger,
+        learner_counter,
     )
 
-    online_learner = calql.CalQLLearner(
-        config.batch_size,
+    actor_key, key = jax.random.split(key)
+
+    evaluator_counter = counting.Counter(parent_counter, "evaluator", time_delta=0.0)
+    evaluator_logger = logger_factory("evaluator", evaluator_counter.get_steps_key(), 0)
+
+    offline_evaluator = make_evaluator(actor_key, offline_learner)
+
+    # Offline training
+    max_num_offline_steps = config.offline_num_steps
+    steps = 0
+    eval_every = config.offline_eval_every
+    while steps < max_num_offline_steps:
+        learner_steps = min(eval_every, max_num_offline_steps - steps)
+        for _ in range(learner_steps):
+            offline_learner.step()
+        offline_evaluator.run(config.offline_num_eval_episodes)
+        steps += learner_steps
+
+    reverb_tables = make_replay_tables(env_spec)
+    replay_server = reverb.Server(reverb_tables, port=None)
+    replay_client = replay_server.localhost_client()
+
+    train_env = d4rl_utils.make_environment(config.dataset_name, config.seed)
+    online_counter = counting.Counter(parent_counter, "actor", time_delta=0.0)
+    online_logger = logger_factory("actor", online_counter.get_steps_key(), 0)
+
+    # Online fine-tuning
+    online_dataset = make_online_iterator(replay_client)
+
+    learner_key, key = jax.random.split(key)
+    online_learner = make_offline_learner(
         networks,
-        jax.random.PRNGKey(3),
-        make_online_iterator(),
-        policy_optimizer=optax.adam(config.cql.policy_lr),
-        critic_optimizer=optax.adam(config.cql.qf_lr),
-        tau=config.cql.soft_target_update_rate,
-        cql_lagrange_threshold=config.cql.cql_target_action_gap,
-        cql_num_samples=config.cql.cql_n_actions,
-        logger=learner_logger,
-        num_sgd_steps_per_step=1,
-        reward_scale=1.0,
-        discount=config.cql.discount,
-        target_entropy=target_entropy,
-        num_bc_iters=0,
-        max_target_backup=config.cql.cql_max_target_backup,
-        use_calql=config.enable_calql,
-        counter=learner_counter,
+        learner_key,
+        online_dataset,
+        env_spec,
+        learner_logger,
+        learner_counter,
     )
     online_learner.restore(offline_learner.save())
 
-    eval_actor = actors.GenericActor(
-        actor_core.batched_feed_forward_to_actor_core(
-            sac.apply_policy_and_sample(networks, eval_mode=True)
+    del offline_learner, offline_iterator, offline_evaluator
+
+    adder = calql.CalQLAdder(
+        adders_reverb.NStepTransitionAdder(
+            replay_client, n_step=1, discount=config.discount
         ),
-        jax.random.PRNGKey(42),
-        variable_utils.VariableClient(
-            online_learner, "policy", update_period=1, device="cpu"
-        ),
-        per_episode_update=True,
+        config.discount,
+        reward_config=reward_config,
     )
 
-    online_evaluator = d4rl_evaluation.D4RLEvaluator(
-        lambda: env,
-        eval_actor,
-        logger=evaluator_logger,
-        counter=evaluator_counter,
-    )
+    actor_key, eval_key = jax.random.split(key)
+    online_actor = make_actor(train_policy, actor_key, online_learner, adder=adder)
+    online_evaluator = make_evaluator(eval_key, online_learner)
 
-    online_actor = actors.GenericActor(
-        actor_core.batched_feed_forward_to_actor_core(
-            sac.apply_policy_and_sample(networks, eval_mode=False)
-        ),
-        jax.random.PRNGKey(0),
-        variable_utils.VariableClient(
-            online_learner, "policy", update_period=1, device="cpu"
-        ),
-        adder=adder,
-        per_episode_update=True,
-    )
-
+    initial_num_steps = config.initial_num_steps
+    eval_every = config.online_eval_every
+    eval_episodes = config.online_num_eval_episodes
+    num_steps = 0
+    episode_length = 0
+    episode_return = 0
+    timestep = train_env.reset()
     online_actor.observe_first(timestep)
     online_actor.update()
-
+    online_evaluator.run(num_episodes=eval_episodes)
     while True:
         action = online_actor.select_action(timestep.observation)
         next_timestep = train_env.step(action)
         num_steps += 1
         episode_return += next_timestep.reward
         episode_length += 1
-        if num_steps >= int(config.max_online_env_steps):
+        if num_steps >= int(config.online_num_steps):
             break
         if num_steps >= initial_num_steps:
             for _ in range(config.online_utd_ratio):
                 online_learner.step()
+
         if num_steps % eval_every == 0:
             online_evaluator.run(num_episodes=eval_episodes)
 

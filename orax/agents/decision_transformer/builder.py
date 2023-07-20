@@ -10,9 +10,9 @@ from acme.jax import variable_utils
 from acme.utils import counting
 from acme.utils import loggers
 
-from orax.agents import acting
-from orax.agents import config as dt_config
-from orax.agents import learning
+from orax.agents.decision_transformer import acting
+from orax.agents.decision_transformer import config as dt_config
+from orax.agents.decision_transformer import learning
 
 DecisionTransformerNetwork = networks_lib.FeedForwardNetwork
 DecisionTransformerPolicy = Any

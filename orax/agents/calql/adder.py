@@ -84,7 +84,10 @@ class CalQLAdder(Adder):
         if next_timestep.last():
             dones = [step.last() for (_, step) in self._steps[1:]]
             rewards = [
-                (step.reward * self._reward_scale + self._reward_bias)
+                (
+                    step.reward * self._reward_config.reward_scale
+                    + self._reward_config.reward_bias
+                )
                 for (_, step) in self._steps[1:]
             ]
             if isinstance(self._reward_config, SparseReward):

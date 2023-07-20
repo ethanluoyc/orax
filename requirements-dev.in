@@ -7,3 +7,4 @@ pylint
 ruff
 ipykernel
 dill
+pre-commit

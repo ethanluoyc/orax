@@ -1,3 +1,4 @@
+# Copyright 2023 Yicheng Luo
 # Copyright 2018 DeepMind Technologies Limited. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,18 +15,18 @@
 
 """JAX experiment utils."""
 # fmt: off
-from acme.jax.experiments.config import CheckpointingConfig
-from acme.jax.experiments.config import DeprecatedPolicyFactory
-from acme.jax.experiments.config import EvaluatorFactory
-from acme.jax.experiments.config import ExperimentConfig
-from acme.jax.experiments.config import MakeActorFn
-from acme.jax.experiments.config import NetworkFactory
-from acme.jax.experiments.config import OfflineExperimentConfig
-from acme.jax.experiments.config import PolicyFactory
-from acme.jax.experiments.config import SnapshotModelFactory
-from acme.jax.experiments.config import default_evaluator_factory
-from acme.jax.experiments.config import make_policy
-from acme.jax.experiments.make_distributed_experiment import make_distributed_experiment
-from acme.jax.experiments.make_distributed_offline_experiment import make_distributed_offline_experiment
-from acme.jax.experiments.run_experiment import run_experiment
-from acme.jax.experiments.run_offline_experiment import run_offline_experiment
+from orax.experiments.config import CheckpointingConfig
+from orax.experiments.config import DeprecatedPolicyFactory
+from orax.experiments.config import EvaluatorFactory
+from orax.experiments.config import ExperimentConfig
+from orax.experiments.config import MakeActorFn
+from orax.experiments.config import NetworkFactory
+from orax.experiments.config import OfflineExperimentConfig
+from orax.experiments.config import PolicyFactory
+from orax.experiments.config import SnapshotModelFactory
+from orax.experiments.config import default_evaluator_factory
+from orax.experiments.config import make_policy
+from orax.experiments.make_distributed_experiment import make_distributed_experiment
+from orax.experiments.make_distributed_offline_experiment import make_distributed_offline_experiment
+from orax.experiments.run_experiment import run_experiment
+from orax.experiments.run_offline_experiment import run_offline_experiment

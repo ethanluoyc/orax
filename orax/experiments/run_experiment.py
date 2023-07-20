@@ -1,3 +1,4 @@
+# Copyright 2023 Yicheng Luo.
 # Copyright 2018 DeepMind Technologies Limited. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,9 +27,10 @@ from acme import core
 from acme import specs
 from acme import types
 from acme.jax import utils
-from acme.jax.experiments import config
 from acme.tf import savers
 from acme.utils import counting
+
+from orax.experiments import config
 
 
 def run_experiment(

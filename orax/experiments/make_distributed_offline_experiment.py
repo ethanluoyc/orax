@@ -1,3 +1,4 @@
+# Copyright 2023 Yicheng Luo.
 # Copyright 2018 DeepMind Technologies Limited. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,9 +26,10 @@ from acme.jax import networks as networks_lib
 from acme.jax import savers
 from acme.jax import snapshotter
 from acme.jax import utils
-from acme.jax.experiments import config
 from acme.utils import counting
 from acme.utils import lp_utils
+
+from orax.experiments import config
 
 
 def make_distributed_offline_experiment(

@@ -1,3 +1,4 @@
+# Copyright 2023 Yicheng Luo.
 # Copyright 2018 DeepMind Technologies Limited. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,11 +23,12 @@ from absl.testing import parameterized
 from acme import specs
 from acme import types
 from acme.agents.jax import crr
-from acme.jax import experiments
 from acme.jax import types as jax_types
 from acme.jax.experiments import test_utils as experiment_test_utils
 from acme.testing import fakes
 from acme.testing import test_utils
+
+from orax import experiments
 
 
 class RunOfflineExperimentTest(test_utils.TestCase):

@@ -6,6 +6,9 @@ build-backend = "hatchling.build"
 name = "orax"
 version = "0.1.0"
 authors = [{ name = "Yicheng Luo", email = "ethanluoyc@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
 
 [tool.black]
 line-length = 88

@@ -8,11 +8,11 @@ import numpy as np
 import optax
 import tensorflow_datasets as tfds
 import tree
-import wandb
 from acme import wrappers
 from acme.jax import variable_utils
 from acme.utils import counting
 
+import wandb
 from orax.agents import decision_transformer
 from orax.agents.decision_transformer import dataset as dataset_lib
 from orax.baselines.d4rl import d4rl_evaluation

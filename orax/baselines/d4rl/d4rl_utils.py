@@ -24,3 +24,15 @@ def get_tfds_name(d4rl_name: str) -> str:
         return f"d4rl_adroit_{env}/{version}-{dataset}"
     else:
         raise ValueError(f"Unknown D4RL environment: {env}")
+
+
+def make_environment(name, seed):
+    import d4rl  # noqa: F401
+    import gym
+    from acme import wrappers
+
+    environment = gym.make(name)
+    environment.seed(seed)
+    environment = wrappers.GymWrapper(environment)
+    environment = wrappers.SinglePrecisionWrapper(environment)
+    return environment

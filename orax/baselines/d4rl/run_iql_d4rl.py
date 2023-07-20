@@ -6,7 +6,6 @@ import tensorflow as tf
 from absl import app
 from absl import flags
 from acme import types
-from acme import wrappers
 from acme.jax import experiments
 from ml_collections import config_flags
 
@@ -17,17 +16,9 @@ from orax.baselines.d4rl import d4rl_utils
 from orax.datasets import tfds
 
 _WORKDIR = flags.DEFINE_string("workdir", "/tmp/orax", "")
+_WANDB_PROJECT = flags.DEFINE_string("wandb_project", None, "")
+_WANDB_ENTITY = flags.DEFINE_string("wandb_entity", None, "")
 _CONFIG = config_flags.DEFINE_config_file("config", None)
-
-
-def make_environment(name, seed):
-    import d4rl  # noqa: F401
-    import gym
-
-    environment = gym.make(name)
-    environment = wrappers.GymWrapper(environment)
-    environment = wrappers.SinglePrecisionWrapper(environment)
-    return environment
 
 
 @tf.function
@@ -119,7 +110,7 @@ def main(_):
         dataset_name, batch_size
     )
 
-    environment_factory = lambda seed: make_environment(dataset_name, seed)
+    environment_factory = lambda seed: d4rl_utils.make_environment(dataset_name, seed)
     network_factory = iql.make_networks
     logger_factory = experiment_utils.LoggerFactory(
         workdir=workdir,
@@ -127,7 +118,12 @@ def main(_):
         evaluator_time_delta=0.0,
         async_learner_logger=True,
         add_uid=add_uid,
-        wandb_kwargs={"config": config.to_dict()},
+        wandb_kwargs={
+            "config": config.to_dict(),
+            "project": _WANDB_PROJECT.value,
+            "entity": _WANDB_ENTITY.value,
+            "tags": [dataset_name, "iql"],
+        },
     )
 
     checkpoint_config = None

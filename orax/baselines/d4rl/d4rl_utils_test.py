@@ -1,14 +1,16 @@
 from absl.testing import absltest
 from absl.testing import parameterized
-from acme.testing import test_utils
 
 from orax.baselines.d4rl import d4rl_utils
 
 
-class D4RLUtilsTest(test_utils.TestCase):
+class D4RLUtilsTest(parameterized.TestCase):
     @parameterized.parameters(
+        ("walker2d-random-v0", "d4rl_mujoco_walker2d/v0-random"),
+        ("walker2d-medium-replay-v0", "d4rl_mujoco_walker2d/v0-mixed"),
+        ("halfcheetah-random-v0", "d4rl_mujoco_halfcheetah/v0-random"),
         ("halfcheetah-medium-v0", "d4rl_mujoco_halfcheetah/v0-medium"),
-        ("halfcheetah-medium-replay-v0", "d4rl_mujoco_halfcheetah/v0-medium-replay"),
+        ("halfcheetah-medium-expert-v0", "d4rl_mujoco_halfcheetah/v0-medium-expert"),
         ("antmaze-medium-diverse-v0", "d4rl_antmaze/medium-diverse-v0"),
         ("pen-human-v0", "d4rl_adroit_pen/v0-human"),
     )
@@ -17,6 +19,7 @@ class D4RLUtilsTest(test_utils.TestCase):
         self.assertEqual(tfds_name, expected_tfds_name)
 
     @parameterized.parameters(
+        ("walker2d-random-v0", ("walker2d", "random", "v0")),
         ("halfcheetah-medium-v0", ("halfcheetah", "medium", "v0")),
         ("halfcheetah-medium-replay-v0", ("halfcheetah", "medium-replay", "v0")),
     )

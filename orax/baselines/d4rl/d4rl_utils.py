@@ -22,7 +22,7 @@ def make_environment(name: str, seed: int):
 
 def parse_d4rl_dataset_name(dataset_name: str) -> Tuple[str, str, str]:
     match = re.match(
-        r"(?P<env>[a-z]+)-(?P<dataset>[a-z\-]+)-(?P<version>v\d)", dataset_name
+        r"(?P<env>[a-z0-9]+)-(?P<dataset>[a-z\-]+)-(?P<version>v\d)", dataset_name
     )
     if not match:
         raise ValueError(f"Invalid D4RL dataset name: {dataset_name}")
@@ -35,7 +35,10 @@ def get_tfds_name(d4rl_name: str) -> str:
 
     env, dataset, version = parse_d4rl_dataset_name(d4rl_name)
     if env in ["halfcheetah", "hopper", "walker2d", "ant"]:
-        return f"d4rl_mujoco_{env}/{version}-{dataset}"
+        if version == "v0" and dataset == "medium-replay":
+            return f"d4rl_mujoco_{env}/{version}-mixed"
+        else:
+            return f"d4rl_mujoco_{env}/{version}-{dataset}"
     elif env in ["antmaze"]:
         return f"d4rl_antmaze/{dataset}-{version}"
     elif env in ["pen", "door", "hammer", "relocate"]:
